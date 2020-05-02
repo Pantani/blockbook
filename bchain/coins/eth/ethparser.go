@@ -89,6 +89,16 @@ type rpcBlockTxids struct {
 	Transactions []string `json:"transactions"`
 }
 
+
+type hash string
+
+type header struct {
+	Difficulty hexutil.Big `json:"difficulty"`
+	Number     hexutil.Big `json:"number"`
+	Hash       hash        `json:"hash"`
+}
+
+
 func ethNumber(n string) (int64, error) {
 	if len(n) > 2 {
 		return strconv.ParseInt(n[2:], 16, 64)

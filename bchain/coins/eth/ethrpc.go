@@ -9,10 +9,9 @@ import (
 	"sync"
 	"time"
 
-	ethereum "github.com/ethereum/go-ethereum"
+	"github.com/ethereum/go-ethereum"
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
-	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/golang/glog"
@@ -26,9 +25,9 @@ type EthereumNet uint32
 
 const (
 	// MainNet is production network
-	MainNet EthereumNet = 1
+	MainNet EthereumNet = 39797
 	// TestNet is Ropsten test network
-	TestNet EthereumNet = 3
+	TestNet EthereumNet = 49797
 )
 
 // Configuration represents json config file
@@ -52,9 +51,9 @@ type EthereumRPC struct {
 	Mempool              *bchain.MempoolEthereumType
 	mempoolInitialized   bool
 	bestHeaderLock       sync.Mutex
-	bestHeader           *ethtypes.Header
+	bestHeader           *header
 	bestHeaderTime       time.Time
-	chanNewBlock         chan *ethtypes.Header
+	chanNewBlock         chan *header
 	newBlockSubscription *rpc.ClientSubscription
 	chanNewTx            chan ethcommon.Hash
 	newTxSubscription    *rpc.ClientSubscription
@@ -92,7 +91,7 @@ func NewEthereumRPC(config json.RawMessage, pushHandler func(bchain.Notification
 
 	// new blocks notifications handling
 	// the subscription is done in Initialize
-	s.chanNewBlock = make(chan *ethtypes.Header)
+	s.chanNewBlock = make(chan *header)
 	go func() {
 		for {
 			h, ok := <-s.chanNewBlock
@@ -343,8 +342,8 @@ func (b *EthereumRPC) GetChainInfo() (*bchain.ChainInfo, error) {
 		return nil, err
 	}
 	rv := &bchain.ChainInfo{
-		Blocks:          int(h.Number.Int64()),
-		Bestblockhash:   h.Hash().Hex(),
+		Blocks:          int(h.Number.ToInt().Int64()),
+		Bestblockhash:   string(h.Hash),
 		Difficulty:      h.Difficulty.String(),
 		Version:         ver,
 		ProtocolVersion: protocol,
@@ -358,7 +357,7 @@ func (b *EthereumRPC) GetChainInfo() (*bchain.ChainInfo, error) {
 	return rv, nil
 }
 
-func (b *EthereumRPC) getBestHeader() (*ethtypes.Header, error) {
+func (b *EthereumRPC) getBestHeader() (*header, error) {
 	b.bestHeaderLock.Lock()
 	defer b.bestHeaderLock.Unlock()
 	// if the best header was not updated for 15 minutes, there could be a subscription problem, reconnect RPC
@@ -374,7 +373,7 @@ func (b *EthereumRPC) getBestHeader() (*ethtypes.Header, error) {
 		var err error
 		ctx, cancel := context.WithTimeout(context.Background(), b.timeout)
 		defer cancel()
-		b.bestHeader, err = b.client.HeaderByNumber(ctx, nil)
+		b.bestHeader, err = b.headerByNumber(ctx, nil)
 		if err != nil {
 			b.bestHeader = nil
 			return nil, err
@@ -390,7 +389,7 @@ func (b *EthereumRPC) GetBestBlockHash() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return h.Hash().Hex(), nil
+	return string(h.Hash), nil
 }
 
 // GetBestBlockHeight returns height of the tip of the best-block-chain
@@ -399,7 +398,7 @@ func (b *EthereumRPC) GetBestBlockHeight() (uint32, error) {
 	if err != nil {
 		return 0, err
 	}
-	return uint32(h.Number.Uint64()), nil
+	return uint32(h.Number.ToInt().Uint64()), nil
 }
 
 // GetBlockHash returns hash of block in best-block-chain at given height
@@ -408,14 +407,14 @@ func (b *EthereumRPC) GetBlockHash(height uint32) (string, error) {
 	n.SetUint64(uint64(height))
 	ctx, cancel := context.WithTimeout(context.Background(), b.timeout)
 	defer cancel()
-	h, err := b.client.HeaderByNumber(ctx, &n)
+	h, err := b.headerByNumber(ctx, &n)
 	if err != nil {
 		if err == ethereum.NotFound {
 			return "", bchain.ErrBlockNotFound
 		}
 		return "", errors.Annotatef(err, "height %v", height)
 	}
-	return h.Hash().Hex(), nil
+	return string(h.Hash), nil
 }
 
 func (b *EthereumRPC) ethHeaderToBlockHeader(h *rpcHeader) (*bchain.BlockHeader, error) {
@@ -463,7 +462,7 @@ func (b *EthereumRPC) computeConfirmations(n uint64) (uint32, error) {
 	if err != nil {
 		return 0, err
 	}
-	bn := bh.Number.Uint64()
+	bn := bh.Number.ToInt().Uint64()
 	// transaction in the best block has 1 confirmation
 	return uint32(bn - n + 1), nil
 }
@@ -776,4 +775,22 @@ func (b *EthereumRPC) EthereumTypeGetNonce(addrDesc bchain.AddressDescriptor) (u
 // GetChainParser returns ethereum BlockChainParser
 func (b *EthereumRPC) GetChainParser() bchain.BlockChainParser {
 	return b.Parser
+}
+
+func toBlockNumArg(number *big.Int) string {
+	if number == nil {
+		return "latest"
+	}
+	return hexutil.EncodeBig(number)
+}
+
+func (b *EthereumRPC) headerByNumber(ctx context.Context, number *big.Int) (*header, error) {
+	var head header
+	err := b.rpc.CallContext(ctx, &head, "eth_getBlockByNumber", toBlockNumArg(number), false)
+	if err != nil {
+		return nil, err
+	} else if len(head.Hash) == 0 {
+		return nil, bchain.ErrBlockNotFound
+	}
+	return &head, nil
 }
